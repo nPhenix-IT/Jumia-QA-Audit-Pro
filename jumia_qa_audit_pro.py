@@ -51,7 +51,7 @@ def main(page: ft.Page):
             lbl_file_selected.color = "red"
         page.update()
 
-    def on_file_result(e: ft.FilePickerResultEvent):
+    def on_file_result(e):
         if e.files:
             process_selected_file(e.files[0].path, e.files[0].name)
 
@@ -81,7 +81,6 @@ def main(page: ft.Page):
     page.overlay.append(confirm_dialog)
 
     # --- 4. Composants de l'Interface ---
-    # Titre avec Icône
     title_row = ft.Row(
         [
             ft.Image(src="https://www.jumia.sn/assets_he/favicon.adbd556a.svg", width=40, height=40),
@@ -128,7 +127,6 @@ def main(page: ft.Page):
         on_click=lambda e: prepare_audit()
     )
 
-    # Boutons de contrôle (Pause / Stop)
     def toggle_pause(e):
         state["is_paused"] = not state["is_paused"]
         btn_pause.icon = ft.Icons.PLAY_ARROW if state["is_paused"] else ft.Icons.PAUSE
@@ -217,7 +215,6 @@ def main(page: ft.Page):
         elapsed_time_text.visible = False
         remaining_time_text.visible = False
         
-        # Reset boutons contrôle
         controls_row.visible = False
         btn_pause.visible = False
         btn_pause.text = "Pause"
@@ -287,7 +284,6 @@ def main(page: ft.Page):
         elapsed_time_text.visible = True
         remaining_time_text.visible = True
         
-        # Afficher boutons de contrôle
         controls_row.visible = True
         btn_pause.visible = True
         btn_stop.visible = True
@@ -335,18 +331,15 @@ def main(page: ft.Page):
             add_log(f"Démarrage de l'audit pour {total} articles...", "cyan")
 
             for p_idx, prod in enumerate(products, 1):
-                # 1. Gérer l'Arrêt
                 if state["stop_requested"]:
                     add_log("Audit arrêté prématurément par l'utilisateur.", "red")
                     break
                 
-                # 2. Gérer la Pause
                 while state["is_paused"]:
                     time.sleep(1)
                     if state["stop_requested"]: break
                 if state["stop_requested"]: break
 
-                # Mise à jour des compteurs de temps
                 current_time = time.time()
                 elapsed = current_time - state["start_time"]
                 elapsed_time_text.value = f"Temps écoulé : {format_time(elapsed)}"
@@ -367,7 +360,6 @@ def main(page: ft.Page):
                     if res.status_code != 200: continue
                     soup = BeautifulSoup(res.content, 'html.parser')
                     
-                    # Extraction SKU
                     sku_val = "N/A"
                     sku_ul = soup.find('ul', class_='-pvs -mvxs -phm -lsn')
                     if sku_ul:
@@ -375,7 +367,6 @@ def main(page: ft.Page):
                         if sku_li and "SKU" in sku_li.get_text():
                             sku_val = sku_li.get_text(strip=True).replace("SKU:", "").strip()
                     
-                    # Extraction Vendeur
                     seller_val = "N/A"
                     seller_p = soup.find('p', class_='-m -pbs')
                     if seller_p:
@@ -389,7 +380,6 @@ def main(page: ft.Page):
                         "Boutique": prod["store_url"]
                     }
                     
-                    # Audit Logique
                     desc_div = soup.find('div', class_=lambda c: c and 'card' in c and 'aim' in c and '-mtm' in c)
                     if not desc_div or not desc_div.find('img'): results["desc"].append(base_info)
                     
@@ -404,7 +394,6 @@ def main(page: ft.Page):
                     processed_count = p_idx
                 except: continue
 
-            # Exportation des résultats même en cas d'arrêt partiel
             if processed_count > 0:
                 docs_path = os.path.join(os.path.expanduser('~'), 'Documents')
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
