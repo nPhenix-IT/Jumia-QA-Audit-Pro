@@ -14,7 +14,7 @@ jobs:
           pip install flet pandas openpyxl beautifulsoup4 requests pyinstaller
       - name: Build with Flet
         run: |
-          flet pack jumia_qa_audit_pro.py --icon icon.png --name "JumiaAuditPro"
+          flet pack jumia_qa_audit_pro.py --icon "https://www.jumia.sn/assets_he/favicon.adbd556a.svg" --name "JumiaAuditPro"
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
