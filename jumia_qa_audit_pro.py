@@ -4,398 +4,459 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import os
 import sys
-import locale
 import threading
 from datetime import datetime
 import time
 from urllib.parse import urlparse
-import math
-import re
 import subprocess
+import re
 
 def main(page: ft.Page):
-    # --- 1. Configuration de la page Flet ---
-    page.title = "Jumia Smart Scraper Pro"
+    # --- 1. Configuration de la page ---
+    page.title = "Jumia QA Audit Pro"
     page.theme_mode = ft.ThemeMode.DARK 
-    page.window_width = 900 
-    page.window_height = 800
-    page.window_min_width = 600
-    page.window_min_height = 700
+    page.window_width = 950 
+    page.window_height = 950
     page.padding = 20
-    # Icône de la fenêtre (Optionnel, peut être ignoré si l'URL ne répond pas)
-    page.window_icon = "https://www.jumia.sn/assets_he/favicon.adbd556a.svg"
     
     # --- Variables d'État ---
-    analysis_result = {"base_url": "", "total_pages": 1, "total_products": 0}
-    
-    # --- 2. Textes & Langue (Version Complète) ---
-    def get_texts():
-        is_fr = False
-        try:
-            lang = locale.getdefaultlocale()[0]
-            if lang and lang.lower().startswith('fr'):
-                is_fr = True
-            if not is_fr and sys.platform == 'win32':
-                import ctypes
-                user_lang = ctypes.windll.kernel32.GetUserDefaultUILanguage()
-                if (user_lang & 0xFF) == 0x0C:
-                    is_fr = True
-        except:
-            is_fr = True 
+    state = {
+        "file_path": None,
+        "is_running": False,
+        "is_paused": False,
+        "stop_requested": False,
+        "found_products": [],
+        "start_time": None,
+        "estimated_total_seconds": 0
+    }
 
-        if is_fr:
-            return {
-                'title': "Jumia Smart Scraper Pro",
-                'subtitle': "L'outil professionnel d'extraction de données marketing",
-                'placeholder': "Collez l'URL de la catégorie Jumia (ex: https://www.jumia.sn/smartphones/)",
-                'btn_analyze': "Analyser la catégorie",
-                'btn_extract': "Lancer l'extraction",
-                'lbl_pages_choice': "Sélectionnez le volume à extraire :",
-                'analysis_found': "✅ Analyse réussie : Environ {} produits trouvés sur {} pages.",
-                'processing': "Extraction en cours : Page {} sur {}...",
-                'saving': "Génération du fichier Excel...",
-                'success': "Succès ! {} produits ont été exportés avec succès.",
-                'error': "Une erreur est survenue : {}",
-                'open_folder': "Ouvrir le dossier de destination",
-                'logs': "Journal des opérations",
-                'log_analyzing': "Analyse de la structure : {} ...",
-                'log_conn_error': "Erreur de connexion (Code : {})",
-                'log_analysis_complete': "Structure identifiée. {} pages disponibles.",
-                'log_no_data': "Aucun produit détecté sur cette page.",
-                'popup_title': "Confirmation de l'extraction",
-                'popup_msg': "Vous allez extraire les données de {} produits.\nTemps estimé : environ {} secondes.",
-                'btn_cancel': "Annuler",
-                'btn_confirm': "Confirmer et Démarrer",
-            }
+    # --- 2. Logique de traitement de fichier ---
+    def process_selected_file(path, name=None):
+        if not path: return
+        # Nettoyage du chemin
+        path = path.strip().replace('"', '').replace("'", "")
+        
+        if os.path.exists(path) and path.lower().endswith(('.xlsx', '.xls')):
+            state["file_path"] = path
+            file_name = name if name else os.path.basename(path)
+            lbl_file_selected.value = f"✅ Fichier prêt : {file_name}"
+            lbl_file_selected.color = "green"
+            path_input.value = path
+            drop_zone.border_color = "green"
+            btn_start_audit.disabled = False
+            add_log(f"Fichier validé : {file_name}", "green")
         else:
-            return {
-                'title': "Jumia Smart Scraper Pro",
-                'subtitle': "Professional marketing data extraction tool",
-                'placeholder': "Paste Jumia category URL (e.g., https://www.jumia.com/laptops/)",
-                'btn_analyze': "Analyze Category",
-                'btn_extract': "Start Extraction",
-                'lbl_pages_choice': "Select extraction volume:",
-                'analysis_found': "✅ Analysis successful: Approx {} items on {} pages.",
-                'processing': "Extracting: Page {} of {}...",
-                'saving': "Generating Excel file...",
-                'success': "Success! {} products exported successfully.",
-                'error': "An error occurred: {}",
-                'open_folder': "Open destination folder",
-                'logs': "Operation Log",
-                'log_analyzing': "Analyzing structure: {} ...",
-                'log_conn_error': "Connection error (Code: {})",
-                'log_analysis_complete': "Structure identified. {} pages detected.",
-                'log_no_data': "No products found on this page.",
-                'popup_title': "Extraction Confirmation",
-                'popup_msg': "You are about to extract {} products.\nEstimated time: approx {} seconds.",
-                'btn_cancel': "Cancel",
-                'btn_confirm': "Confirm & Start",
-            }
+            add_log("Erreur : Fichier invalide ou introuvable. Utilisez un .xlsx ou .xls", "red")
+            lbl_file_selected.value = "Format de fichier non supporté"
+            lbl_file_selected.color = "red"
+        page.update()
 
-    txt = get_texts()
+    def on_file_result(e):
+        # Correction : On vérifie directement e.files sans référence à FilePickerResultEvent si possible
+        if e.files:
+            process_selected_file(e.files[0].path, e.files[0].name)
 
-    # --- 3. Composants UI avec Design Premium ---
-    
+    # Correction de l'erreur 'on_result' : Initialisation puis assignation
+    file_picker = ft.FilePicker()
+    file_picker.on_result = on_file_result
+    page.overlay.append(file_picker)
+
+    # --- 3. Modales & Dialogues ---
+    def close_dlg(e):
+        confirm_dialog.open = False
+        page.update()
+
+    def confirm_start(e):
+        confirm_dialog.open = False
+        page.update()
+        start_audit_process()
+
+    confirm_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Confirmation de l'Audit"),
+        content=ft.Text("Calcul en cours..."),
+        actions=[
+            ft.TextButton("Oui, démarrer", on_click=confirm_start),
+            ft.TextButton("Non, annuler", on_click=close_dlg),
+        ],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(confirm_dialog)
+
+    # --- 4. Composants de l'Interface ---
     title_row = ft.Row(
         [
-            ft.Icon(ft.icons.SHOPPING_CART_CHECKOUT_ROUNDED, color="orange", size=40),
-            ft.Text(txt['title'], size=32, weight=ft.FontWeight.BOLD, color="orange")
+            ft.Image(src="https://www.jumia.sn/assets_he/favicon.adbd556a.svg", width=40, height=40),
+            ft.Text("Jumia QA Audit Pro", size=30, weight=ft.FontWeight.BOLD, color="blue"),
         ],
-        alignment=ft.MainAxisAlignment.CENTER
+        alignment=ft.MainAxisAlignment.CENTER,
     )
     
-    subtitle_text = ft.Text(txt['subtitle'], italic=True, color="grey", size=14)
+    subtitle_text = ft.Text("Audit de la qualité du catalogue (Images, Descriptions, Miniatures)", size=14, color="grey")
+    
+    lbl_file_selected = ft.Text("Glissez votre fichier Excel ici", color="orange", size=16, weight="bold")
 
-    # Correction critique : Utilisation de hint_text
-    url_input = ft.TextField(
-        label="Lien Jumia",
-        hint_text=txt['placeholder'],
-        expand=True,
-        border_color="orange",
+    # Correction de l'erreur 'placeholder' : On utilise uniquement hint_text
+    path_input = ft.TextField(
+        label="Ou collez le chemin du fichier ici",
+        hint_text="Ex: C:/Users/Nom/Documents/boutiques.xlsx",
+        text_size=12,
+        on_change=lambda e: process_selected_file(e.control.value),
+        suffix_icon=ft.Icons.CHECK_CIRCLE_OUTLINE
+    )
+
+    drop_zone = ft.Container(
+        content=ft.Column([
+            ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, size=50, color="blue"),
+            lbl_file_selected,
+            ft.Text("ou cliquez pour parcourir", size=12, color="grey")
+        ], alignment=ft.MainAxisAlignment.CENTER, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+        margin=10,
+        padding=30,
+        alignment=ft.alignment.center,
+        bgcolor=ft.Colors.with_opacity(0.05, ft.Colors.WHITE),
+        border=ft.border.all(2, ft.Colors.BLUE_400),
         border_radius=15,
-        prefix_icon=ft.icons.LINK,
-        on_submit=lambda e: analyze_action(e)
-    )
-    
-    btn_analyze = ft.ElevatedButton(
-        text=txt['btn_analyze'],
-        icon=ft.icons.SEARCH_ROUNDED,
-        style=ft.ButtonStyle(
-            color="white",
-            bgcolor="orange",
-            padding=20,
-            shape=ft.RoundedRectangleBorder(radius=10),
-        ),
-        on_click=lambda e: analyze_action(e)
+        width=500,
+        height=200,
+        on_click=lambda _: file_picker.pick_files(allowed_extensions=["xlsx", "xls"]),
     )
 
-    lbl_analysis = ft.Container(
-        content=ft.Text("", color="green_accent", weight=ft.FontWeight.W_600),
-        padding=10,
-        bgcolor=ft.colors.with_opacity(0.1, "green"),
-        border_radius=10,
+    btn_start_audit = ft.ElevatedButton(
+        text="Analyser le fichier et démarrer",
+        icon=ft.Icons.PLAY_ARROW,
+        style=ft.ButtonStyle(padding=20, shape=ft.RoundedRectangleBorder(radius=10)),
+        bgcolor="blue", color="white",
+        disabled=True,
+        on_click=lambda e: prepare_audit()
+    )
+
+    def toggle_pause(e):
+        state["is_paused"] = not state["is_paused"]
+        btn_pause.icon = ft.Icons.PLAY_ARROW if state["is_paused"] else ft.Icons.PAUSE
+        btn_pause.text = "Reprendre" if state["is_paused"] else "Pause"
+        btn_pause.bgcolor = "green" if state["is_paused"] else "orange"
+        add_log("Audit mis en pause" if state["is_paused"] else "Reprise de l'audit", "orange")
+        page.update()
+
+    def request_stop(e):
+        state["stop_requested"] = True
+        btn_stop.disabled = True
+        btn_pause.disabled = True
+        add_log("Arrêt demandé... finalisation du lot actuel", "red")
+        page.update()
+
+    btn_pause = ft.ElevatedButton(
+        "Pause", icon=ft.Icons.PAUSE, bgcolor="orange", color="white", 
+        visible=False, on_click=toggle_pause
+    )
+    btn_stop = ft.ElevatedButton(
+        "Arrêter", icon=ft.Icons.STOP, bgcolor="red", color="white", 
+        visible=False, on_click=request_stop
+    )
+
+    controls_row = ft.Row(
+        [btn_pause, btn_stop],
+        alignment=ft.MainAxisAlignment.CENTER,
+        spacing=20,
         visible=False
     )
 
-    dropdown_pages = ft.Dropdown(
-        width=120,
-        border_radius=10,
-        label="Pages",
-        border_color="orange"
-    )
+    progress_bar = ft.ProgressBar(visible=False, color="orange", width=500)
+    progress_text = ft.Text("", visible=False, color="cyan")
     
-    btn_extract = ft.ElevatedButton(
-        text=txt['btn_extract'],
-        icon=ft.icons.PLAY_ARROW_ROUNDED,
-        style=ft.ButtonStyle(
-            color="white",
-            bgcolor="green",
-            padding=20,
-            shape=ft.RoundedRectangleBorder(radius=10),
-        ),
-        disabled=True,
-        on_click=lambda e: extract_action(e)
-    )
+    elapsed_time_text = ft.Text("Temps écoulé : 00:00", size=12, color="grey", visible=False)
+    remaining_time_text = ft.Text("Temps restant : --:--", size=12, color="orange", visible=False)
     
-    extraction_options_row = ft.Row(
-        [
-            ft.Text(txt['lbl_pages_choice'], weight=ft.FontWeight.BOLD),
-            dropdown_pages,
-            btn_extract
-        ],
-        alignment=ft.MainAxisAlignment.CENTER,
-        visible=False,
-        spacing=20
+    time_row = ft.Row(
+        [elapsed_time_text, remaining_time_text],
+        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        width=500,
+        visible=False
     )
-
-    progress_bar = ft.ProgressBar(visible=False, color="orange", height=10, border_radius=5)
-    progress_status = ft.Text("", size=12, italic=True)
 
     log_column = ft.Column(scroll=ft.ScrollMode.AUTO, spacing=5)
     log_container = ft.Container(
         content=log_column,
-        border=ft.border.all(1, "grey700"),
+        border=ft.border.all(1, "outline"), 
         border_radius=10,
         padding=15,
-        bgcolor="#1E1E1E",
-        height=250,
-        expand=True
-    )
-    
-    btn_open_folder = ft.ElevatedButton(
-        text=txt['open_folder'],
-        icon=ft.icons.FOLDER_OPEN_ROUNDED,
-        style=ft.ButtonStyle(color="orange"),
-        visible=False
+        bgcolor=ft.Colors.with_opacity(0.05, ft.Colors.BLACK), 
+        height=250, 
     )
 
-    # --- Popups ---
-    confirm_dialog = ft.AlertDialog(
-        modal=True,
-        title=ft.Text(txt['popup_title']),
-        content=ft.Text(""),
-        actions=[
-            ft.TextButton(txt['btn_cancel'], on_click=lambda e: close_dialog()),
-            ft.ElevatedButton(txt['btn_confirm'], bgcolor="orange", color="white", on_click=lambda e: start_extraction_thread()),
-        ],
-    )
+    btn_open_folder = ft.ElevatedButton("Ouvrir le dossier des résultats", icon=ft.Icons.FOLDER_OPEN, visible=False)
 
-    def close_dialog():
-        page.dialog.open = False
-        btn_extract.disabled = False
-        page.update()
-
+    # --- 5. Logique d'Audit ---
     def add_log(message, color="white"):
-        log_column.controls.append(
-            ft.Row([
-                ft.Text(f"[{datetime.now().strftime('%H:%M:%S')}]", color="grey", size=11),
-                ft.Text(message, color=color, size=12, selectable=True)
-            ])
-        )
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        log_column.controls.append(ft.Text(f"[{timestamp}] {message}", color=color, font_family="Consolas", size=12))
         page.update()
-        log_column.scroll_to(offset=-1, duration=300)
+        try:
+            log_column.scroll_to(offset=-1, duration=100)
+        except:
+            pass
 
-    # --- Logique d'Analyse ---
-    def analyze_action(e):
-        url = url_input.value.strip()
-        if not url or "jumia" not in url.lower():
-            url_input.error_text = "Veuillez entrer une URL Jumia valide"
-            page.update()
-            return
+    def format_time(seconds):
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{mins:02d}:{secs:02d}"
+
+    def reset_form():
+        state["file_path"] = None
+        state["found_products"] = []
+        state["is_running"] = False
+        state["is_paused"] = False
+        state["stop_requested"] = False
         
-        url_input.error_text = None
-        btn_analyze.disabled = True
+        path_input.value = ""
+        path_input.disabled = False
+        lbl_file_selected.value = "Glissez votre fichier Excel ici"
+        lbl_file_selected.color = "orange"
+        drop_zone.border_color = ft.Colors.BLUE_400
+        drop_zone.disabled = False
+        btn_start_audit.disabled = True
+        progress_bar.visible = False
+        progress_text.visible = False
+        time_row.visible = False
+        elapsed_time_text.visible = False
+        remaining_time_text.visible = False
+        
+        controls_row.visible = False
+        btn_pause.visible = False
+        btn_pause.text = "Pause"
+        btn_pause.icon = ft.Icons.PAUSE
+        btn_pause.bgcolor = "orange"
+        btn_stop.visible = False
+        btn_stop.disabled = False
+        btn_pause.disabled = False
+        
+        page.update()
+
+    def prepare_audit():
+        if not state["file_path"] or state["is_running"]: return
+        
+        btn_start_audit.disabled = True
         progress_bar.visible = True
+        progress_text.value = "Analyse préliminaire des boutiques..."
+        progress_text.visible = True
+        page.update()
+        
+        threading.Thread(target=analyze_links_before_start, daemon=True).start()
+
+    def analyze_links_before_start():
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        try:
+            df = pd.read_excel(state["file_path"])
+            store_urls = df.iloc[:, 0].dropna().tolist()
+            
+            all_prods = []
+            for url in store_urls:
+                all_prods.extend(get_product_links(url, headers))
+            
+            state["found_products"] = all_prods
+            count = len(all_prods)
+            
+            state["estimated_total_seconds"] = int(count * 1.7) + 5
+            time_str = format_time(state["estimated_total_seconds"])
+
+            confirm_dialog.content = ft.Text(
+                f"L'analyse a trouvé {count} articles à auditer.\n\n"
+                f"Temps estimé : environ {time_str}.\n\n"
+                "Voulez-vous lancer le traitement ?"
+            )
+            confirm_dialog.open = True
+            
+        except Exception as e:
+            add_log(f"Erreur d'analyse : {e}", "red")
+        finally:
+            progress_bar.visible = False
+            progress_text.visible = False
+            btn_start_audit.disabled = False
+            page.update()
+
+    def start_audit_process():
+        state["is_running"] = True
+        state["is_paused"] = False
+        state["stop_requested"] = False
+        state["start_time"] = time.time()
+        
+        btn_start_audit.disabled = True
+        path_input.disabled = True
+        drop_zone.disabled = True
+        
+        progress_bar.visible = True
+        progress_text.visible = True
+        time_row.visible = True
+        elapsed_time_text.visible = True
+        remaining_time_text.visible = True
+        
+        controls_row.visible = True
+        btn_pause.visible = True
+        btn_stop.visible = True
+        
+        btn_open_folder.visible = False
         log_column.controls.clear()
         page.update()
-        threading.Thread(target=run_analysis, args=(url,), daemon=True).start()
+        threading.Thread(target=run_audit, daemon=True).start()
 
-    def run_analysis(url):
-        try:
-            add_log(txt['log_analyzing'].format(url), "cyan")
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            res = requests.get(url, headers=headers, timeout=15)
-            
-            if res.status_code != 200:
-                add_log(txt['log_conn_error'].format(res.status_code), "red")
-                return
+    def get_product_links(store_url, headers):
+        product_links = []
+        current_url = store_url
+        parsed_uri = urlparse(store_url)
+        base_domain = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
+        while current_url:
+            try:
+                response = requests.get(current_url, headers=headers, timeout=15)
+                if response.status_code != 200: break
+                soup = BeautifulSoup(response.content, 'html.parser')
+                articles = soup.find_all('article', class_='prd')
+                for item in articles:
+                    core_link = item.find('a', class_='core')
+                    if core_link and 'href' in core_link.attrs:
+                        href = core_link['href']
+                        link = f"{base_domain}{href}" if href.startswith('/') else href
+                        name = item.find('h3', class_='name').get_text(strip=True) if item.find('h3', class_='name') else "N/A"
+                        product_links.append({"url": link, "name": name, "store_url": store_url})
+                
+                next_btn = soup.find('a', attrs={'aria-label': 'Page suivante'}) or soup.find('a', attrs={'aria-label': 'Next Page'})
+                if next_btn and 'href' in next_btn.attrs:
+                    next_href = next_btn['href']
+                    current_url = f"{base_domain}{next_href}" if next_href.startswith('/') else next_href
+                else: break
+            except: break
+        return product_links
 
-            parsed = urlparse(url)
-            analysis_result["base_url"] = f"{parsed.scheme}://{parsed.netloc}"
-            soup = BeautifulSoup(res.content, 'html.parser')
-            
-            # Détection des pages
-            last_page = 1
-            pagination = soup.find_all('a', class_='pg')
-            for pg in pagination:
-                try:
-                    num = re.sub(r'[^\d]', '', pg.text)
-                    if num.isdigit():
-                        val = int(num)
-                        if val > last_page: last_page = val
-                except: continue
-            
-            analysis_result["total_pages"] = last_page
-            
-            # Détection du nombre de produits
-            count_tag = soup.find('p', class_="-gy5")
-            prod_count_str = "0"
-            if count_tag:
-                prod_count_str = ''.join(filter(str.isdigit, count_tag.text))
-            
-            analysis_result["total_products"] = int(prod_count_str) if prod_count_str else 0
-            
-            update_ui_after_analysis(prod_count_str if prod_count_str else "N/A", last_page)
-            add_log(txt['log_analysis_complete'].format(last_page), "green")
-            
-        except Exception as ex:
-            add_log(txt['error'].format(str(ex)), "red")
-        finally:
-            progress_bar.visible = False
-            btn_analyze.disabled = False
-            page.update()
-
-    def update_ui_after_analysis(count, pages):
-        lbl_analysis.content.value = txt['analysis_found'].format(count, pages)
-        lbl_analysis.visible = True
-        
-        # Options intelligentes de pagination
-        opts = [1, 5, 10, 20, 50, pages]
-        unique_opts = sorted(list(set([o for o in opts if o <= pages])))
-        dropdown_pages.options = [ft.dropdown.Option(str(i)) for i in unique_opts]
-        dropdown_pages.value = "1"
-        
-        extraction_options_row.visible = True
-        btn_extract.disabled = False
-        page.update()
-
-    # --- Logique d'Extraction ---
-    def extract_action(e):
-        limit = int(dropdown_pages.value)
-        est_items = limit * 40 # Jumia affiche ~40 produits par page
-        confirm_dialog.content.value = txt['popup_msg'].format(est_items, int(limit * 1.5))
-        page.dialog = confirm_dialog
-        confirm_dialog.open = True
-        page.update()
-
-    def start_extraction_thread():
-        confirm_dialog.open = False
-        btn_extract.disabled = True
-        url_input.disabled = True
-        btn_analyze.disabled = True
-        progress_bar.visible = True
-        page.update()
-        threading.Thread(target=run_extraction, args=(url_input.value, int(dropdown_pages.value)), daemon=True).start()
-
-    def run_extraction(url, limit):
-        data = []
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        base_path = url.split('?')[0]
+    def run_audit():
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        results = {"desc": [], "bullets": [], "gallery": []}
+        products = state["found_products"]
+        total = len(products)
+        processed_count = 0
         
         try:
-            for p in range(1, limit + 1):
-                p_url = f"{base_path}?page={p}" if '?' not in base_path else f"{base_path}&page={p}"
-                progress_status.value = txt['processing'].format(p, limit)
-                add_log(progress_status.value, "orange")
-                
-                res = requests.get(p_url, headers=headers, timeout=20)
-                soup = BeautifulSoup(res.content, 'html.parser')
-                items = soup.find_all('article', class_='prd')
-                
-                if not items:
-                    add_log(f"Fin précoce à la page {p} (aucun produit)", "yellow")
+            add_log(f"Démarrage de l'audit pour {total} articles...", "cyan")
+
+            for p_idx, prod in enumerate(products, 1):
+                if state["stop_requested"]:
+                    add_log("Audit arrêté par l'utilisateur.", "red")
                     break
-
-                for it in items:
-                    try:
-                        name_tag = it.find('h3', class_='name')
-                        price_tag = it.find('div', class_='prc')
-                        link_tag = it.find('a', class_='core')
-                        brand = it.get('data-brand', 'N/A')
-                        
-                        full_link = ""
-                        if link_tag:
-                            href = link_tag.get('href', '')
-                            full_link = analysis_result["base_url"] + href if href.startswith('/') else href
-
-                        data.append({
-                            "Date": datetime.now().strftime("%d/%m/%Y"),
-                            "ID": it.get('data-ga4-item_id', 'N/A'),
-                            "Marque": brand,
-                            "Désignation": name_tag.text.strip() if name_tag else "N/A",
-                            "Prix": re.sub(r'[^\d]', '', price_tag.text) if price_tag else "0",
-                            "Lien": full_link
-                        })
-                    except: continue
                 
-                time.sleep(0.5) # Politesse serveur
+                while state["is_paused"]:
+                    time.sleep(1)
+                    if state["stop_requested"]: break
+                if state["stop_requested"]: break
 
-            if data:
-                add_log(txt['saving'], "cyan")
-                df = pd.DataFrame(data)
-                filename = f"Jumia_Data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-                save_path = os.path.join(os.path.expanduser('~'), 'Documents', filename)
+                current_time = time.time()
+                elapsed = current_time - state["start_time"]
+                elapsed_time_text.value = f"Temps écoulé : {format_time(elapsed)}"
                 
-                df.to_excel(save_path, index=False)
-                add_log(txt['success'].format(len(data)), "green")
+                if p_idx > 1:
+                    avg_time_per_item = elapsed / p_idx
+                    remaining_items = total - p_idx
+                    remaining_sec = avg_time_per_item * remaining_items
+                    remaining_time_text.value = f"Temps restant : ~{format_time(remaining_sec)}"
+                
+                progress_text.value = f"Traitement article {p_idx}/{total}"
+                progress_bar.value = p_idx / total
+                page.update()
+                
+                try:
+                    time.sleep(0.5) 
+                    res = requests.get(prod["url"], headers=headers, timeout=10)
+                    if res.status_code != 200: continue
+                    soup = BeautifulSoup(res.content, 'html.parser')
+                    
+                    sku_val = "N/A"
+                    sku_ul = soup.find('ul', class_='-pvs -mvxs -phm -lsn')
+                    if sku_ul:
+                        sku_li = sku_ul.find('li', class_='-pvxs')
+                        if sku_li and "SKU" in sku_li.get_text():
+                            sku_val = sku_li.get_text(strip=True).replace("SKU:", "").strip()
+                    
+                    seller_val = "N/A"
+                    seller_p = soup.find('p', class_='-m -pbs')
+                    if seller_p:
+                        seller_val = seller_p.get_text(strip=True)
+
+                    base_info = {
+                        "SKU": sku_val, 
+                        "Nom": prod["name"], 
+                        "Vendeur": seller_val,
+                        "Lien": prod["url"], 
+                        "Boutique": prod["store_url"]
+                    }
+                    
+                    desc_div = soup.find('div', class_=lambda c: c and 'card' in c and 'aim' in c and '-mtm' in c)
+                    if not desc_div or not desc_div.find('img'): results["desc"].append(base_info)
+                    
+                    short_desc_div = soup.find('div', class_=lambda c: c and 'card-b' in c and '-fh' in c)
+                    if not short_desc_div or not short_desc_div.find('li'): results["bullets"].append(base_info)
+                    
+                    gallery_div = soup.find('div', class_=lambda c: c and '-ptxs' in c and '-pbs' in c)
+                    if gallery_div:
+                        if len(gallery_div.find_all('img')) == 1: results["gallery"].append(base_info)
+                    else: results["gallery"].append(base_info)
+                    
+                    processed_count = p_idx
+                except: continue
+
+            if processed_count > 0:
+                docs_path = os.path.join(os.path.expanduser('~'), 'Documents')
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                mapping = {"desc": "Sans_Images_Description", "bullets": "Sans_Bullet_Points", "gallery": "Image_Galerie_Unique"}
+                
+                generated = False
+                for key, name in mapping.items():
+                    if results[key]:
+                        path = os.path.join(docs_path, f"Audit_{name}_{ts}.xlsx")
+                        pd.DataFrame(results[key]).to_excel(path, index=False)
+                        add_log(f"Rapport généré : {name}", "green")
+                        generated = True
+                
+                if not generated:
+                    add_log("Audit terminé : Aucun défaut détecté !", "green")
+                else:
+                    add_log("✅ Rapports enregistrés dans Documents", "green")
                 
                 btn_open_folder.visible = True
-                btn_open_folder.on_click = lambda _: os.startfile(os.path.dirname(save_path))
-            else:
-                add_log(txt['log_no_data'], "red")
-                
-        except Exception as ex:
-            add_log(txt['error'].format(str(ex)), "red")
+                btn_open_folder.on_click = lambda _: (os.startfile(docs_path) if sys.platform == 'win32' else subprocess.run(['open', docs_path]))
+            
+            remaining_time_text.value = "Statut : Terminé" if not state["stop_requested"] else "Statut : Interrompu"
+            
+            time.sleep(3)
+            add_log("Réinitialisation du formulaire...", "grey")
+            reset_form()
+
+        except Exception as e: 
+            add_log(f"Erreur fatale : {e}", "red")
+            reset_form()
         finally:
-            progress_bar.visible = False
-            progress_status.value = ""
-            url_input.disabled = False
-            btn_analyze.disabled = False
-            btn_extract.disabled = False
             page.update()
 
-    # --- Mise en page finale (Responsive) ---
-    main_layout = ft.Container(
-        content=ft.Column([
+    # --- 6. Assemblage ---
+    page.add(
+        ft.Column([
             title_row,
             ft.Row([subtitle_text], alignment=ft.MainAxisAlignment.CENTER),
-            ft.Divider(height=20, color="transparent"),
-            ft.Row([url_input, btn_analyze], spacing=10),
-            lbl_analysis,
             ft.Divider(height=10, color="transparent"),
-            extraction_options_row,
-            progress_bar,
-            progress_status,
-            ft.Text(txt['logs'], weight=ft.FontWeight.BOLD, size=16),
-            log_container,
-            ft.Row([btn_open_folder], alignment=ft.MainAxisAlignment.CENTER)
-        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-        padding=10,
-        expand=True
+            ft.Column([
+                drop_zone,
+                ft.Container(path_input, width=500),
+                ft.Divider(height=5, color="transparent"),
+                btn_start_audit,
+                progress_text,
+                progress_bar,
+                time_row,
+                controls_row, 
+                ft.Divider(height=10, color="transparent"),
+                ft.Text("Journal d'audit :", weight="bold"),
+                log_container,
+                btn_open_folder
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+        ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
     )
-
-    page.add(main_layout)
+    page.update()
 
 if __name__ == "__main__":
-    # Correction pour les environnements packagés Windows
     ft.app(target=main)
