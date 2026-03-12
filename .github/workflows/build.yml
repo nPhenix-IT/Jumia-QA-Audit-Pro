@@ -1,0 +1,22 @@
+name: Build Windows Exe
+on: [push]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install flet pandas openpyxl beautifulsoup4 requests pyinstaller
+      - name: Build with Flet
+        run: |
+          flet pack jumia_qa_audit_pro.py --icon icon.png --name "JumiaAuditPro"
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: JumiaAuditPro-Windows
+          path: dist/*.exe
